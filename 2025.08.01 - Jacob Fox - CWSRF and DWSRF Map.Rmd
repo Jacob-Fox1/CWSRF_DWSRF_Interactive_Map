@@ -1,0 +1,302 @@
+---
+title: "2025.08.01 - Jacob Fox - CWSRF and DWSRF Map"
+author: "Jacob Fox"
+date: "2025-08-01"
+output: html_document
+---
+
+```{r ReadMe}
+
+###############################################################################
+#
+# Name of Program: 2025.08.01 - Jacob Fox - CWSRF and DWSRF Map.Rmd
+# Program File Path: "C:/Users/Jacob/iCloudDrive/Jacob's Portfolio/UNC's EFC/2025.08.01 - Jacob Fox - CWSRF and DWSRF Map.Rmd"
+# Created By: J. Fox
+# Date: August 1, 2025
+# Updated:
+# Objective:  Create a map of total federal funding received by water systems in North Carolina in FY 2021 – FY 2024 using information in USASpending.
+#
+# Data Files Used: 
+#                  "CWSRF Data.xlsx"
+#                  "DWSRF Data.xlsx"
+#                  "CWS_1_2.gpkg"
+#                  "12_Digit_HUC_Subwatersheds.shp"
+#                  "Assistance_PrimeTransactions_2025-08-01_H20M24S45_1.csv" 
+#
+###############################################################################
+```
+
+```{r Load Libraries}
+
+# Clear Cache
+rm(list = ls())
+cat("\014")
+
+# Load Library
+library(tidyverse)
+library(lubridate)
+library(readxl)
+library(gridExtra)
+library(ggplot2)
+library(scales)
+library(sf)
+library(leaflet)
+library(htmltools)
+library(RColorBrewer)
+library(here)
+library(htmlwidgets)
+
+```
+
+```{r Load Data}
+
+# Load Data
+cwsrf_df <- read_excel(here("data","CWSRF Data.xlsx"))
+
+dwsrf_df <- read_excel(here("data","DWSRF Data.xlsx"))
+
+# Load CWS boundaries
+cws_boundaries <- st_read(here("data","CWS_1_2.gpkg"))
+
+# Load HUC 12 boundaries
+huc_boundaries <- st_read(here("data","12_Digit_HUC_Subwatersheds.shp"))
+
+# Load USASpending Transaction data (not used in analysis)
+transaction_data <- read.csv(here("data","Assistance_PrimeTransactions_2025-08-01_H20M24S45_1.csv"))
+```
+
+```{r Clean Data}
+
+# Filter for NC boundaries
+nc_boundaries <- dplyr::filter(cws_boundaries, State == "NC")
+
+# Add HUC geometry to cwsrf data - Set up data for merging
+huc_boundaries <- huc_boundaries %>%
+  rename(HUC12 = `HUC_12`)
+
+cwsrf_df <- cwsrf_df %>%
+  rename(HUC12 = `HUC 12`)
+
+cwsrf_df$HUC12 <- as.character(cwsrf_df$HUC12)
+
+# Pad the CWSRF codes with leading zeros
+cwsrf_df <- cwsrf_df %>%
+  mutate(
+    HUC12 = str_pad(HUC12,
+                    width = 12,
+                    side  = "left",
+                    pad   = "0")
+  )
+
+# Full-join data
+cwsrf_map <- huc_boundaries %>%
+  full_join(
+    cwsrf_df,
+    by      = "HUC12",
+    suffix  = c("_geom", "_data")  # avoids name clashes if you have same column names
+  )
+
+# Add PWSID geometry to dwsrf data
+
+# Full-join data
+dwsrf_map <- nc_boundaries %>%
+  full_join(
+    dwsrf_df,
+    by      = "PWSID",
+    suffix  = c("_geom", "_data")  # avoids name clashes if you have same column names
+  )
+```
+
+```{r Make the ggplots}
+
+# Test nc_boundaries dataset 
+
+ggplot(nc_boundaries) +
+  geom_sf(fill = "lightblue", color = "white") +
+  labs(
+    title = "Community Water System Boundaries in North Carolina"
+  ) +
+  theme_minimal()
+
+# Graph CWSRF Data with HUC Boundaries
+
+cw_map <- ggplot(cwsrf_map) +
+  geom_sf(aes(fill = `Current Agreement Amount`), color = NA) +
+  scale_fill_gradient(
+    low      = "lightgreen",
+    high     = "darkgreen",
+    na.value = "grey90",
+    name     = "Agreement\nAmount ($)",
+    labels   = label_comma()   # ← this *is* a callable labeller
+  ) +
+  labs(
+    title    = "Current CWSRF Agreement Amounts by HUC12",
+    subtitle = "Darker blue indicates higher loan/award amounts",
+    caption  = "Data sources: cwsrf_df & huc_boundaries"
+  ) +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    axis.text  = element_blank(),
+    axis.ticks = element_blank(),
+    legend.key = element_rect(fill = NA)
+  )
+
+# Graph DWSRF Data with PWSID Boundaries
+
+dw_map <- ggplot(dwsrf_map) +
+  geom_sf(aes(fill = `Initial Agreement Amount`), color = NA) +
+  scale_fill_gradient(
+    low      = "lightblue",
+    high     = "darkblue",
+    na.value = "grey90",
+    name     = "Agreement\nAmount ($)",
+    labels   = label_comma()   # ← this *is* a callable labeller
+  ) +
+  labs(
+    title    = "Initial DWSRF Agreement Amounts by PWSID",
+    subtitle = "Darker blue indicates higher loan/award amounts",
+    caption  = "Data sources: dwsrf_df & nc_boundaries"
+  ) +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    axis.text  = element_blank(),
+    axis.ticks = element_blank(),
+    legend.key = element_rect(fill = NA)
+  )
+
+# Join the plots into a 2 panel graphic
+grid.arrange(cw_map, dw_map, ncol = 1)
+
+# Capture the arranged grob
+arranged_maps <- arrangeGrob(
+  cw_map, dw_map,
+  ncol = 1,
+  top  = "EFC Data Task Plots"   
+)
+
+# Write to PNG
+ggsave(
+  filename = "2025.08.01 - Jacob Fox - CWSRF and DWSRF Map.png",
+  plot     = arranged_maps,
+  width    = 8,     # inches
+  height   = 12,    # inches
+  dpi      = 300,   # high resolution
+  units    = "in"
+)
+```
+
+```{r Leaflet}
+
+# Check CRS of data sets and convert to Lat/Long
+st_crs(cwsrf_map)
+st_crs(dwsrf_map)
+
+cwsrf_map <- cwsrf_map %>% st_transform(crs = 4326)
+dwsrf_map <- dwsrf_map %>% st_transform(crs = 4326)
+
+# Make Leaflet
+
+# Create separate color palettes
+
+# grab the 9-class Blues and Greens palette, then drop the 3 lightest colors
+dark_blues <- brewer.pal(9, "Blues")[4:9]
+
+dark_greens <- brewer.pal(9, "Greens")[4:9]
+
+pal_cwsrf <- colorNumeric(
+  palette  = dark_blues,
+  domain   = cwsrf_map$`Current Agreement Amount`,
+  na.color = "#f0f0f0"
+)
+
+pal_dwsrf <- colorNumeric(
+  palette  = dark_greens,
+  domain   = dwsrf_map$`Initial Agreement Amount`,
+  na.color = "#f0f0f0"
+)
+
+# Build the leaflet map
+interactivemap <- leaflet() %>%
+  # basemap
+  addProviderTiles(providers$CartoDB.Positron) %>%
+  
+  # CWSRF polygons
+  addPolygons(
+    data            = cwsrf_map,
+    fillColor       = ~pal_cwsrf(`Current Agreement Amount`),
+    color           = "#CCCCCC",
+    weight          = 1,
+    opacity         = 1,
+    fillOpacity     = 0.7,
+    group           = "CWSRF",
+    label           = ~sprintf(
+                         "HUC12: %s<br/>Agreement: $%s",
+                         HUC12,
+                         formatC(`Current Agreement Amount`,
+                                 format   = "f",
+                                 big.mark = ",")
+                       ) %>% lapply(HTML),
+    highlightOptions = highlightOptions(
+                         color        = "white",
+                         weight       = 2,
+                         bringToFront = TRUE
+                       )
+  ) %>%
+  
+  # DWSRF polygons
+  addPolygons(
+    data            = dwsrf_map,
+    fillColor       = ~pal_dwsrf(`Initial Agreement Amount`),
+    color           = "#CCCCCC",
+    weight          = 1,
+    opacity         = 1,
+    fillOpacity     = 0.7,
+    group           = "DWSRF",
+    label           = ~sprintf(
+                         "PWSID: %s<br/>Agreement: $%s",
+                         PWSID,
+                         formatC(`Initial Agreement Amount`,
+                                 format   = "f",
+                                 big.mark = ",")
+                       ) %>% lapply(HTML),
+    highlightOptions = highlightOptions(
+                         color        = "white",
+                         weight       = 2,
+                         bringToFront = TRUE
+                       )
+  ) %>%
+  
+  # Legends—one per layer
+  addLegend(
+    position = "bottomright",
+    pal      = pal_cwsrf,
+    values   = cwsrf_map$`Current Agreement Amount`,
+    title    = htmltools::HTML("CWSRF<br/>Agreement ($)"),
+    labFormat = labelFormat(prefix = "$", big.mark = ","),
+    group    = "CWSRF"
+  ) %>%
+  addLegend(
+    position = "bottomleft",
+    pal      = pal_dwsrf,
+    values   = dwsrf_map$`Initial Agreement Amount`,
+    title    = htmltools::HTML("DWSRF<br/>Agreement ($)"),
+    labFormat = labelFormat(prefix = "$", big.mark = ","),
+    group    = "DWSRF"
+  ) %>%
+  
+  # Layer control
+  addLayersControl(
+    overlayGroups    = c("CWSRF", "DWSRF"),
+    options          = layersControlOptions(collapsed = FALSE)
+  )
+
+# Export to html
+saveWidget(
+  widget = interactivemap,
+  file   = here::here("analysis", "2025.08.01 - Jacob Fox - EFC Leaflet.html"),
+  selfcontained = TRUE
+)
+
+```
